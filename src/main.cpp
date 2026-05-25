@@ -1,0 +1,208 @@
+/*
+  WISADEV — Claude Code Monitor v3.0
+  =====================================
+  Hardware: ESP32 DevKit + OLED SSD1306 0.91" (128x32)
+  Communication: BLE UART (Nordic UART Service)
+  Mac ส่งข้อมูลผ่าน Bluetooth → แสดงบน OLED
+
+  Wiring:
+  OLED VCC → 3.3V  |  OLED GND → GND
+  OLED SCL → GPIO 22  |  OLED SDA → GPIO 21
+*/
+
+#include <Arduino.h>
+#include <Wire.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_SSD1306.h>
+#include <BLEDevice.h>
+#include <BLEServer.h>
+#include <BLEUtils.h>
+#include <BLE2902.h>
+#include <ArduinoJson.h>
+
+// ─── Display ───
+#define SCREEN_WIDTH   128
+#define SCREEN_HEIGHT   32
+#define OLED_RESET      -1
+#define SCREEN_ADDRESS  0x3C
+#define SDA_PIN         21
+#define SCL_PIN         22
+
+// ─── BLE Nordic UART Service ───
+#define NUS_SERVICE_UUID  "6E400001-B5A3-F393-E0A9-E50E24DCCA9E"
+#define NUS_RX_UUID       "6E400002-B5A3-F393-E0A9-E50E24DCCA9E"  // Mac → ESP32
+#define NUS_TX_UUID       "6E400003-B5A3-F393-E0A9-E50E24DCCA9E"  // ESP32 → Mac
+
+// ─── Objects ───
+Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
+BLEServer*         pServer          = nullptr;
+BLECharacteristic* pTxCharacteristic = nullptr;
+
+// ─── State ───
+bool          bleConnected     = false;
+bool          dataLoaded       = false;
+int           sesPct           = 0;
+String        sesReset         = "--";
+int           allPct           = 0;
+String        allReset         = "--";
+String        lastUpdate       = "--:--";
+
+// Software clock
+unsigned long clockSyncMillis  = 0;
+int           clockHour        = 0;
+int           clockMin         = 0;
+
+unsigned long lastBlink = 0;
+bool          blinkState = false;
+
+// ─── BLE Callbacks ───
+class ServerCallbacks : public BLEServerCallbacks {
+    void onConnect(BLEServer* s) override {
+        bleConnected = true;
+        Serial.println("BLE Connected");
+    }
+    void onDisconnect(BLEServer* s) override {
+        bleConnected = false;
+        Serial.println("BLE Disconnected — restarting advertising");
+        s->startAdvertising();
+    }
+};
+
+class RxCallbacks : public BLECharacteristicCallbacks {
+    void onWrite(BLECharacteristic* c) override {
+        String value = c->getValue().c_str();
+        Serial.println("Received: " + value);
+
+        JsonDocument doc;
+        if (!deserializeJson(doc, value)) {
+            sesPct     = doc["ses"]  | 0;
+            sesReset   = doc["sr"].as<String>();
+            allPct     = doc["all"]  | 0;
+            allReset   = doc["ar"].as<String>();
+            lastUpdate = doc["time"].as<String>();
+
+            // sync software clock
+            String t   = lastUpdate;
+            clockHour  = t.substring(0, 2).toInt();
+            clockMin   = t.substring(3, 5).toInt();
+            clockSyncMillis = millis();
+            dataLoaded = true;
+        }
+    }
+};
+
+// ─── Setup ───
+void setup() {
+    Serial.begin(115200);
+    Serial.println("\n=== WISADEV Claude Monitor v3 ===");
+
+    Wire.begin(SDA_PIN, SCL_PIN);
+    if (!display.begin(SSD1306_SWITCHCAPVCC, SCREEN_ADDRESS)) {
+        Serial.println("SSD1306 failed!");
+        for (;;);
+    }
+
+    // Splash screen
+    display.clearDisplay();
+    display.setTextColor(SSD1306_WHITE);
+    display.setTextSize(2);
+    display.setCursor(22, 0);
+    display.print("WISADEV");
+    display.setTextSize(1);
+    display.setCursor(8, 22);
+    display.print("Claude Monitor v3.0");
+    display.display();
+    delay(2000);
+
+    // BLE init
+    BLEDevice::init("WISADEV");
+    pServer = BLEDevice::createServer();
+    pServer->setCallbacks(new ServerCallbacks());
+
+    BLEService* pService = pServer->createService(NUS_SERVICE_UUID);
+
+    pTxCharacteristic = pService->createCharacteristic(
+        NUS_TX_UUID,
+        BLECharacteristic::PROPERTY_NOTIFY
+    );
+    pTxCharacteristic->addDescriptor(new BLE2902());
+
+    BLECharacteristic* pRxChar = pService->createCharacteristic(
+        NUS_RX_UUID,
+        BLECharacteristic::PROPERTY_WRITE | BLECharacteristic::PROPERTY_WRITE_NR
+    );
+    pRxChar->setCallbacks(new RxCallbacks());
+
+    pService->start();
+
+    BLEAdvertising* pAdv = BLEDevice::getAdvertising();
+    pAdv->addServiceUUID(NUS_SERVICE_UUID);
+    pAdv->setScanResponse(true);
+    BLEDevice::startAdvertising();
+
+    Serial.println("BLE advertising as 'WISADEV'");
+}
+
+// ─── Loop ───
+void loop() {
+    display.clearDisplay();
+    display.setTextSize(1);
+
+    if (dataLoaded) {
+        // คำนวณเวลาปัจจุบันจาก software clock
+        unsigned long elapsed = (millis() - clockSyncMillis) / 1000;
+        int totalMins = clockHour * 60 + clockMin + (int)(elapsed / 60);
+        int curH = (totalMins / 60) % 24;
+        int curM = totalMins % 60;
+        char nowBuf[6], updBuf[10];
+        snprintf(nowBuf, sizeof(nowBuf), "%02d:%02d", curH, curM);
+        snprintf(updBuf, sizeof(updBuf), "upd%s", lastUpdate.c_str());
+
+        // Row 0: เวลาปัจจุบัน (ซ้าย) | เวลาอัพเดต (ขวา)
+        display.setCursor(0, 0);
+        display.print(nowBuf);
+        int tw = strlen(updBuf) * 6;
+        display.setCursor(SCREEN_WIDTH - tw, 0);
+        display.print(updBuf);
+        display.drawLine(0, 9, SCREEN_WIDTH, 9, SSD1306_WHITE);
+
+        // Session row: "Ses:15%    3h38m"
+        display.setCursor(0, 13);
+        display.print("Ses:");
+        display.print(sesPct);
+        display.print("%");
+        display.setCursor(SCREEN_WIDTH - (int)sesReset.length() * 6, 13);
+        display.print(sesReset);
+
+        // Weekly row: "All:53%   Wed8AM"
+        display.setCursor(0, 23);
+        display.print("All:");
+        display.print(allPct);
+        display.print("%");
+        display.setCursor(SCREEN_WIDTH - (int)allReset.length() * 6, 23);
+        display.print(allReset);
+
+        // dot เล็กมุมขวาล่าง บอกสถานะ BLE
+        if (bleConnected)
+            display.fillCircle(125, 30, 2, SSD1306_WHITE);
+        else
+            display.drawCircle(125, 30, 2, SSD1306_WHITE);
+
+    } else {
+        // ยังไม่มีข้อมูล — รอ Mac ส่งมา
+        if (millis() - lastBlink > 600) {
+            blinkState = !blinkState;
+            lastBlink  = millis();
+        }
+        display.setCursor(0, 0);
+        display.print("WISADEV");
+        display.setCursor(86, 0);
+        display.print(blinkState ? "* BLE" : "  BLE");
+        display.drawLine(0, 9, SCREEN_WIDTH, 9, SSD1306_WHITE);
+        display.setCursor(10, 18);
+        display.print(bleConnected ? "Waiting data..." : "Waiting for Mac...");
+    }
+
+    display.display();
+    delay(100);
+}
