@@ -6,3 +6,5 @@
 .wisadev_address
 *.jpg
 *.png
+*.DS_Store
+*.log
