@@ -113,12 +113,33 @@ async def send_ble(payload):
         save_address(address)
         print(f"บันทึก address แล้ว: {address}")
 
-    async with BleakClient(address) as client:
-        await asyncio.sleep(1)
-        await client.write_gatt_char(RX_UUID, payload.encode(), response=True)
-        await asyncio.sleep(0.5)
-        print("[OK] ส่งข้อมูลสำเร็จ")
-    return True
+    try:
+        async with BleakClient(address) as client:
+            await asyncio.sleep(1)
+            await client.write_gatt_char(RX_UUID, payload.encode(), response=True)
+            await asyncio.sleep(0.5)
+            print("[OK] ส่งข้อมูลสำเร็จ")
+        return True
+    except Exception as e:
+        if "was not found" in str(e) or "not found" in str(e).lower():
+            print(f"[WARN] ไม่พบ address เดิม — สแกนหาใหม่...")
+            try:
+                os.remove(CONFIG_FILE)
+            except Exception:
+                pass
+            device = await pick_device()
+            if not device:
+                return False
+            address = device.address
+            save_address(address)
+            print(f"บันทึก address ใหม่: {address}")
+            async with BleakClient(address) as client:
+                await asyncio.sleep(1)
+                await client.write_gatt_char(RX_UUID, payload.encode(), response=True)
+                await asyncio.sleep(0.5)
+                print("[OK] ส่งข้อมูลสำเร็จ")
+            return True
+        raise
 
 
 def main():

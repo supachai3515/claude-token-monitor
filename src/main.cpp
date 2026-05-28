@@ -13,6 +13,7 @@
 #include <Arduino.h>
 #include <Wire.h>
 #include <Adafruit_GFX.h>
+#include <Fonts/TomThumb.h>
 #include <Adafruit_SSD1306.h>
 #include <BLEDevice.h>
 #include <BLEServer.h>
@@ -147,49 +148,54 @@ void setup() {
 void loop() {
     display.clearDisplay();
     display.setTextSize(1);
+    display.setTextColor(SSD1306_WHITE);
 
     if (dataLoaded) {
-        // คำนวณเวลาปัจจุบันจาก software clock
         unsigned long elapsed = (millis() - clockSyncMillis) / 1000;
         int totalMins = clockHour * 60 + clockMin + (int)(elapsed / 60);
         int curH = (totalMins / 60) % 24;
         int curM = totalMins % 60;
-        char nowBuf[6], updBuf[10];
+        char nowBuf[6];
         snprintf(nowBuf, sizeof(nowBuf), "%02d:%02d", curH, curM);
-        snprintf(updBuf, sizeof(updBuf), "upd%s", lastUpdate.c_str());
 
-        // Row 0: เวลาปัจจุบัน (ซ้าย) | เวลาอัพเดต (ขวา)
+        const int COLS = SCREEN_WIDTH / 6;  // 21 chars per row
+
+        // ── Row 0: 19:23 (left)   U19:20 (right) ──
+        char udStr[10];
+        snprintf(udStr, sizeof(udStr), "U%s", lastUpdate.c_str());
         display.setCursor(0, 0);
         display.print(nowBuf);
-        int tw = strlen(updBuf) * 6;
-        display.setCursor(SCREEN_WIDTH - tw, 0);
-        display.print(updBuf);
-        display.drawLine(0, 9, SCREEN_WIDTH, 9, SSD1306_WHITE);
+        display.setCursor(SCREEN_WIDTH - (int)strlen(udStr) * 6, 0);
+        display.print(udStr);
 
-        // Session row: "Ses:15%    3h38m"
-        display.setCursor(0, 13);
-        display.print("Ses:");
-        display.print(sesPct);
-        display.print("%");
-        display.setCursor(SCREEN_WIDTH - (int)sesReset.length() * 6, 13);
+        // ── Row 1: S:28% ||        | 1h34m  (each | = 10%) ──
+        char sesLabel[8];
+        snprintf(sesLabel, sizeof(sesLabel), "S:%d%% ", sesPct);
+        int sesFill = sesPct / 10;
+
+        display.setTextWrap(false);
+        display.setCursor(0, 12);
+        display.print(sesLabel);
+        for (int i = 0; i < 10; i++)
+            display.print(i < sesFill ? '|' : '.');
         display.print(sesReset);
 
-        // Weekly row: "All:53%   Wed8AM"
+        // ── Row 2: A:64% ||||||....Wed8AM  (each | = 10%) ──
+        char allLabel[8];
+        snprintf(allLabel, sizeof(allLabel), "A:%d%% ", allPct);
+        int allFill = allPct / 10;
+
         display.setCursor(0, 23);
-        display.print("All:");
-        display.print(allPct);
-        display.print("%");
-        display.setCursor(SCREEN_WIDTH - (int)allReset.length() * 6, 23);
+        display.print(allLabel);
+        for (int i = 0; i < 10; i++)
+            display.print(i < allFill ? '|' : '.');
         display.print(allReset);
 
-        // dot เล็กมุมขวาล่าง บอกสถานะ BLE
-        if (bleConnected)
-            display.fillCircle(125, 30, 2, SSD1306_WHITE);
-        else
-            display.drawCircle(125, 30, 2, SSD1306_WHITE);
+        // BLE dot (bottom-right)
+        if (bleConnected) display.fillCircle(126, 30, 1, SSD1306_WHITE);
+        else              display.drawCircle(126, 30, 1, SSD1306_WHITE);
 
     } else {
-        // ยังไม่มีข้อมูล — รอ Mac ส่งมา
         if (millis() - lastBlink > 600) {
             blinkState = !blinkState;
             lastBlink  = millis();
