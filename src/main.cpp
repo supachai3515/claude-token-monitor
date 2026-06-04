@@ -102,6 +102,7 @@ void setup() {
         Serial.println("SSD1306 failed!");
         for (;;);
     }
+    display.setRotation(2);  // หมุนจอ 180 องศา (แก้จอกลับหัว)
 
     // Splash screen
     display.clearDisplay();
