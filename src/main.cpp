@@ -34,6 +34,9 @@
 #define NUS_RX_UUID       "6E400002-B5A3-F393-E0A9-E50E24DCCA9E"  // Mac → ESP32
 #define NUS_TX_UUID       "6E400003-B5A3-F393-E0A9-E50E24DCCA9E"  // ESP32 → Mac
 
+// ─── Data timeout ───
+#define DATA_TIMEOUT_MS  180000UL   // 3 minutes without a push = offline
+
 // ─── Objects ───
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
 BLEServer*         pServer          = nullptr;
@@ -52,6 +55,8 @@ String        lastUpdate       = "--:--";
 unsigned long clockSyncMillis  = 0;
 int           clockHour        = 0;
 int           clockMin         = 0;
+
+unsigned long lastDataMillis = 0;   // when the last valid payload arrived
 
 unsigned long lastBlink = 0;
 bool          blinkState = false;
@@ -87,6 +92,7 @@ class RxCallbacks : public BLECharacteristicCallbacks {
             clockHour  = t.substring(0, 2).toInt();
             clockMin   = t.substring(3, 5).toInt();
             clockSyncMillis = millis();
+            lastDataMillis  = millis();
             dataLoaded = true;
         }
     }
@@ -151,6 +157,15 @@ void loop() {
     display.setTextSize(1);
     display.setTextColor(SSD1306_WHITE);
 
+    if (millis() - lastBlink > 600) {
+        blinkState = !blinkState;
+        lastBlink  = millis();
+    }
+
+    // No payload for 3 minutes → treat the link as down
+    bool dataStale = dataLoaded && (millis() - lastDataMillis > DATA_TIMEOUT_MS);
+    bool linkUp    = bleConnected && !dataStale;
+
     if (dataLoaded) {
         unsigned long elapsed = (millis() - clockSyncMillis) / 1000;
         int totalMins = clockHour * 60 + clockMin + (int)(elapsed / 60);
@@ -161,9 +176,10 @@ void loop() {
 
         const int COLS = SCREEN_WIDTH / 6;  // 21 chars per row
 
-        // ── Row 0: 19:23 (left)   U19:20 (right) ──
+        // ── Row 0: 19:23 (left)   U19:20 / OFFLINE (right) ──
         char udStr[10];
-        snprintf(udStr, sizeof(udStr), "U%s", lastUpdate.c_str());
+        if (dataStale) strcpy(udStr, blinkState ? "OFFLINE" : "");
+        else           snprintf(udStr, sizeof(udStr), "U%s", lastUpdate.c_str());
         display.setCursor(0, 0);
         display.print(nowBuf);
         display.setCursor(SCREEN_WIDTH - (int)strlen(udStr) * 6, 0);
@@ -193,14 +209,10 @@ void loop() {
         display.print(allReset);
 
         // BLE dot (bottom-right)
-        if (bleConnected) display.fillCircle(126, 30, 1, SSD1306_WHITE);
-        else              display.drawCircle(126, 30, 1, SSD1306_WHITE);
+        if (linkUp) display.fillCircle(126, 30, 1, SSD1306_WHITE);
+        else        display.drawCircle(126, 30, 1, SSD1306_WHITE);
 
     } else {
-        if (millis() - lastBlink > 600) {
-            blinkState = !blinkState;
-            lastBlink  = millis();
-        }
         display.setCursor(0, 0);
         display.print("WISADEV");
         display.setCursor(86, 0);
